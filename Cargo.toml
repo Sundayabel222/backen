@@ -7,6 +7,10 @@ edition = "2021"
 name = "zenith-backend"
 path = "src/main.rs"
 
+[[bin]]
+name = "zenith-admin"
+path = "src/bin/zenith-admin.rs"
+
 [dependencies]
 axum = { version = "0.7", features = ["ws"] }
 tokio = { version = "1", features = ["full"] }
@@ -21,6 +25,8 @@ dotenvy = "0.15"
 ed25519-dalek = "2"
 data-encoding = "2"
 rand = "0.8"
+sha2 = "0.10"
+hex = "0.4"
 tower_governor = "0.4"
 utoipa = { version = "5", features = ["axum_extras", "time"] }
 utoipa-swagger-ui = { version = "8", features = ["axum"] }

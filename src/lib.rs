@@ -14,6 +14,7 @@ use tower_http::trace::TraceLayer;
 use utoipa::{IntoParams, OpenApi, ToSchema};
 use utoipa_swagger_ui::SwaggerUi;
 
+pub mod admin;
 pub mod alerts;
 pub mod auth;
 pub mod collateral;
