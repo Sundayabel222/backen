@@ -45,7 +45,7 @@ pub async fn post_nonce(
 
     let nonce = random_token_hex(16);
     let message = format!("Sign in to Zenith\nNonce: {nonce}");
-    let expires_at = OffsetDateTime::now_utc() + Duration::seconds(NONCE_TTL_SECS);
+    let expires_at = crate::models::now_utc_millis() + Duration::seconds(NONCE_TTL_SECS);
 
     sqlx::query("INSERT INTO auth_nonces (nonce, wallet_address, expires_at) VALUES (?, ?, ?)")
         .bind(&message)
@@ -150,7 +150,7 @@ pub async fn post_verify(
     .map_err(|e| db_error("create or confirm account", e))?;
 
     let token = random_token_hex(32);
-    let session_expires_at = OffsetDateTime::now_utc() + Duration::seconds(SESSION_TTL_SECS);
+    let session_expires_at = crate::models::now_utc_millis() + Duration::seconds(SESSION_TTL_SECS);
     sqlx::query("INSERT INTO sessions (token, wallet_address, expires_at) VALUES (?, ?, ?)")
         .bind(&token)
         .bind(&req.wallet_address)
@@ -220,7 +220,7 @@ pub async fn get_me(auth: AuthUser) -> Json<MeResponse> {
 /// instead of only being observable through log lines or side effects on
 /// a live timer.
 pub async fn sweep_expired(db: &sqlx::SqlitePool) -> Result<(u64, u64), sqlx::Error> {
-    let now = OffsetDateTime::now_utc();
+    let now = crate::models::now_utc_millis();
 
     let nonces = sqlx::query("DELETE FROM auth_nonces WHERE julianday(expires_at) < julianday(?)")
         .bind(now)

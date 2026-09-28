@@ -23,7 +23,7 @@ cargo run
 ```
 
 ```bash
-cargo test              # 11 unit tests + 29 integration tests
+cargo test              # unit and integration test suite
 cargo clippy --all-targets -- -D warnings
 cargo fmt --check
 ```
@@ -31,6 +31,15 @@ cargo fmt --check
 No external services required — sqlx creates and migrates the SQLite
 file on first run, and every integration test spins up its own
 throwaway temp-file database.
+
+The OpenAPI 3.1 document is served at
+`/api/v1/openapi.json` and the interactive Swagger UI at `/docs`.
+After changing API routes or request/response types, regenerate the
+committed specification with `cargo run --bin generate-openapi`; CI
+checks that `openapi.json` matches the current annotations.
+All timestamps in model responses are typed `OffsetDateTime` values
+serialized as strict RFC 3339 strings in UTC; SQLite stores the same
+timestamps normalized to millisecond-precision UTC strings.
 
 ## Endpoints
 

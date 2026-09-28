@@ -3,6 +3,12 @@ use sqlx::FromRow;
 use time::OffsetDateTime;
 use utoipa::ToSchema;
 
+pub fn now_utc_millis() -> OffsetDateTime {
+    let now = OffsetDateTime::now_utc();
+    now.replace_nanosecond((now.nanosecond() / 1_000_000) * 1_000_000)
+        .expect("millisecond precision is within the valid nanosecond range")
+}
+
 #[derive(Debug, Clone, FromRow, Serialize, ToSchema)]
 pub struct Account {
     pub wallet_address: String,
@@ -56,4 +62,16 @@ pub struct Alert {
     pub created_at: OffsetDateTime,
     #[serde(with = "time::serde::rfc3339::option")]
     pub triggered_at: Option<OffsetDateTime>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn application_timestamps_are_utc_with_millisecond_precision() {
+        let timestamp = now_utc_millis();
+        assert_eq!(timestamp.offset(), time::UtcOffset::UTC);
+        assert_eq!(timestamp.nanosecond() % 1_000_000, 0);
+    }
 }

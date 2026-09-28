@@ -2,7 +2,6 @@ use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use axum::response::Json;
 use serde::Deserialize;
-use time::OffsetDateTime;
 use utoipa::ToSchema;
 
 use crate::auth::AuthUser;
@@ -124,7 +123,7 @@ pub async fn check_once(state: &AppState) -> u64 {
                AND ((condition = 'above' AND target_price <= ?)
                  OR (condition = 'below' AND target_price >= ?))",
         )
-        .bind(OffsetDateTime::now_utc())
+        .bind(crate::models::now_utc_millis())
         .bind(&underlying)
         .bind(spot)
         .bind(spot)

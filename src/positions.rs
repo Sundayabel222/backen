@@ -3,7 +3,6 @@ use axum::http::{HeaderMap, HeaderValue, StatusCode};
 use axum::response::Json;
 use serde::{Deserialize, Serialize};
 use sqlx::{Sqlite, Transaction};
-use time::OffsetDateTime;
 use utoipa::{IntoParams, ToSchema};
 
 use crate::auth::AuthUser;
@@ -366,7 +365,7 @@ pub(crate) async fn close_position_in_tx(
     .bind(close_premium)
     .bind(spot)
     .bind(realized_pnl)
-    .bind(OffsetDateTime::now_utc())
+    .bind(crate::models::now_utc_millis())
     .bind(position_id)
     .execute(&mut **tx)
     .await
