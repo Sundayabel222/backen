@@ -1,7 +1,6 @@
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
 use axum::extract::State;
 use axum::response::Response;
-use rand::Rng;
 
 use crate::AppState;
 
@@ -14,11 +13,17 @@ const MAX_PCT_MOVE_PER_TICK: f64 = 0.003; // +/-0.3%
 /// bounds of one tick directly instead of only observing it through a
 /// live 2-second timer.
 pub fn tick_once(state: &AppState) -> String {
+    tick_once_with_rng(state, &mut rand::thread_rng())
+}
+
+pub fn tick_once_with_rng<R: rand::Rng + ?Sized>(state: &AppState, rng: &mut R) -> String {
     let prices = {
         let mut prices = state.spot_prices.lock().unwrap();
-        for price in prices.values_mut() {
-            let pct_move =
-                rand::thread_rng().gen_range(-MAX_PCT_MOVE_PER_TICK..MAX_PCT_MOVE_PER_TICK);
+        let mut underlyings: Vec<_> = prices.keys().cloned().collect();
+        underlyings.sort();
+        for underlying in underlyings {
+            let price = prices.get_mut(&underlying).expect("key came from this map");
+            let pct_move = rng.gen_range(-MAX_PCT_MOVE_PER_TICK..MAX_PCT_MOVE_PER_TICK);
             *price = (*price * (1.0 + pct_move)).max(0.0001);
         }
         prices.clone()
@@ -42,6 +47,7 @@ pub async fn price_simulator_loop(state: AppState) {
     }
 }
 
+#[utoipa::path(get, path = "/api/v1/ws/spot", responses((status = 101, description = "WebSocket stream of spot-price snapshots")))]
 pub async fn ws_spot(ws: WebSocketUpgrade, State(state): State<AppState>) -> Response {
     ws.on_upgrade(move |socket| handle_spot_socket(socket, state))
 }

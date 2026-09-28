@@ -2,12 +2,14 @@ use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use axum::response::Json;
 use serde::Deserialize;
+use utoipa::ToSchema;
 
 use crate::auth::AuthUser;
 use crate::error::{db_error, AppError, AppJson};
 use crate::models::WatchlistItem;
 use crate::AppState;
 
+#[utoipa::path(get, path = "/api/v1/watchlist", security(("bearerAuth" = [])), responses((status = 200, body = [WatchlistItem]), (status = 401, body = crate::error::ErrorResponse, description = "Unauthorized")))]
 pub async fn get_watchlist(
     State(state): State<AppState>,
     AuthUser(wallet_address): AuthUser,
@@ -22,11 +24,12 @@ pub async fn get_watchlist(
     Ok(Json(items))
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, ToSchema)]
 pub struct AddWatchlistRequest {
     pub underlying: String,
 }
 
+#[utoipa::path(post, path = "/api/v1/watchlist", request_body = AddWatchlistRequest, security(("bearerAuth" = [])), responses((status = 201, description = "Watchlist item added"), (status = 401, body = crate::error::ErrorResponse, description = "Unauthorized"), (status = 404, body = crate::error::ErrorResponse, description = "Unknown underlying")))]
 pub async fn add_watchlist(
     State(state): State<AppState>,
     AuthUser(wallet_address): AuthUser,
@@ -57,6 +60,7 @@ pub async fn add_watchlist(
     Ok(StatusCode::CREATED)
 }
 
+#[utoipa::path(delete, path = "/api/v1/watchlist/{underlying}", params(("underlying" = String, Path, description = "Underlying symbol")), security(("bearerAuth" = [])), responses((status = 204, description = "Watchlist item removed"), (status = 401, body = crate::error::ErrorResponse, description = "Unauthorized"), (status = 404, body = crate::error::ErrorResponse, description = "Watchlist item not found")))]
 pub async fn remove_watchlist(
     State(state): State<AppState>,
     AuthUser(wallet_address): AuthUser,

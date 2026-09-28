@@ -5,10 +5,11 @@
 use axum::http::StatusCode;
 use axum::response::Json;
 use serde::{Deserialize, Serialize};
+use utoipa::ToSchema;
 
 use crate::error::AppError;
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, ToSchema)]
 pub struct PricedLeg {
     pub option_type: String,   // "call" | "put"
     pub position_type: String, // "long" | "short" (long == frontend's "buy")
@@ -34,7 +35,7 @@ pub fn combined_pnl(legs: &[PricedLeg], spot_at_expiry: f64) -> f64 {
     })
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, ToSchema)]
 pub struct PayoffPoint {
     pub spot: f64,
     pub pnl: f64,
@@ -72,7 +73,7 @@ pub fn net_premium(legs: &[PricedLeg]) -> f64 {
     })
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, ToSchema)]
 pub struct PayoffRequest {
     pub legs: Vec<PricedLeg>,
     pub lo_spot: f64,
@@ -85,7 +86,7 @@ fn default_steps() -> u32 {
     200
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, ToSchema)]
 pub struct PayoffResponse {
     pub points: Vec<PayoffPoint>,
     pub net_premium: f64,
@@ -94,6 +95,7 @@ pub struct PayoffResponse {
 /// Stateless P&L math over caller-supplied legs (no pricing lookup, no
 /// auth) — the frontend's strategy builder already has each leg's
 /// premium from a prior /api/v1/price call before it needs this.
+#[utoipa::path(post, path = "/api/v1/portfolio/payoff", request_body = PayoffRequest, responses((status = 200, body = PayoffResponse), (status = 400, body = crate::error::ErrorResponse, description = "Invalid payoff request")))]
 pub async fn post_payoff(Json(req): Json<PayoffRequest>) -> Result<Json<PayoffResponse>, AppError> {
     if req.legs.is_empty() {
         return Err(AppError::new(

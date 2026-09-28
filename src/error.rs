@@ -4,7 +4,13 @@ use axum::http::request::Parts;
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Json, Response};
 use serde::de::DeserializeOwned;
-use serde_json::json;
+use serde::Serialize;
+use utoipa::ToSchema;
+
+#[derive(Debug, Serialize, ToSchema)]
+pub struct ErrorResponse {
+    pub error: String,
+}
 
 /// A JSON-bodied error instead of the empty-body `StatusCode` rejections
 /// every handler was returning — a client currently has to infer "why"
@@ -49,7 +55,13 @@ pub fn db_error(context: &str, e: sqlx::Error) -> AppError {
 
 impl IntoResponse for AppError {
     fn into_response(self) -> Response {
-        (self.status, Json(json!({ "error": self.message }))).into_response()
+        (
+            self.status,
+            Json(ErrorResponse {
+                error: self.message,
+            }),
+        )
+            .into_response()
     }
 }
 

@@ -5,6 +5,8 @@ use data_encoding::BASE64;
 use ed25519_dalek::{Signature, VerifyingKey};
 use rand::RngCore;
 use serde::{Deserialize, Serialize};
+use time::{Duration, OffsetDateTime};
+use utoipa::ToSchema;
 
 use crate::error::{db_error, AppError, AppJson};
 use crate::AppState;
@@ -18,44 +20,18 @@ fn random_token_hex(len_bytes: usize) -> String {
     data_encoding::HEXLOWER.encode(&bytes)
 }
 
-/// sqlite's strftime('now') gives us second precision in the schema
-/// defaults; we need the same clock in Rust without pulling in chrono
-/// just for "now + N seconds" arithmetic, so this uses SystemTime + a
-/// tiny hand-rolled RFC3339 formatter (UTC only, which is all we need).
-/// Values only ever get compared as strings against each other, so the
-/// exact format just needs to sort the same way ISO 8601 does.
-fn format_unix_secs(total_secs: i64) -> String {
-    // Civil-from-days algorithm (Howard Hinnant's public-domain date
-    // algorithms) to avoid a chrono dependency for one timestamp format.
-    let days = total_secs.div_euclid(86400);
-    let rem = total_secs.rem_euclid(86400);
-    let (hour, minute, second) = (rem / 3600, (rem % 3600) / 60, rem % 60);
-
-    let z = days + 719468;
-    let era = if z >= 0 { z } else { z - 146096 } / 146097;
-    let doe = z - era * 146097;
-    let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;
-    let y = yoe + era * 400;
-    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
-    let mp = (5 * doy + 2) / 153;
-    let d = doy - (153 * mp + 2) / 5 + 1;
-    let m = if mp < 10 { mp + 3 } else { mp - 9 };
-    let y = if m <= 2 { y + 1 } else { y };
-
-    format!("{y:04}-{m:02}-{d:02}T{hour:02}:{minute:02}:{second:02}.000Z")
-}
-
-#[derive(Deserialize)]
+#[derive(Deserialize, ToSchema)]
 pub struct NonceRequest {
     pub wallet_address: String,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, ToSchema)]
 pub struct NonceResponse {
     pub nonce: String,
     pub message: String,
 }
 
+#[utoipa::path(post, path = "/api/v1/auth/nonce", request_body = NonceRequest, responses((status = 200, body = NonceResponse), (status = 400, body = crate::error::ErrorResponse, description = "Invalid wallet address")))]
 pub async fn post_nonce(
     State(state): State<AppState>,
     AppJson(req): AppJson<NonceRequest>,
@@ -69,12 +45,12 @@ pub async fn post_nonce(
 
     let nonce = random_token_hex(16);
     let message = format!("Sign in to Zenith\nNonce: {nonce}");
-    let expires_at = format_unix_secs(now_unix() + NONCE_TTL_SECS);
+    let expires_at = OffsetDateTime::now_utc() + Duration::seconds(NONCE_TTL_SECS);
 
     sqlx::query("INSERT INTO auth_nonces (nonce, wallet_address, expires_at) VALUES (?, ?, ?)")
         .bind(&message)
         .bind(&req.wallet_address)
-        .bind(&expires_at)
+        .bind(expires_at)
         .execute(&state.db)
         .await
         .map_err(|e| db_error("store auth nonce", e))?;
@@ -82,31 +58,30 @@ pub async fn post_nonce(
     Ok(Json(NonceResponse { nonce, message }))
 }
 
-fn now_unix() -> i64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap()
-        .as_secs() as i64
-}
-
-#[derive(Deserialize)]
+#[derive(Deserialize, ToSchema)]
 pub struct VerifyRequest {
     pub wallet_address: String,
     pub message: String,
     pub signature: String, // base64-encoded 64-byte ed25519 signature
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, ToSchema)]
 pub struct VerifyResponse {
     pub token: String,
     pub wallet_address: String,
 }
 
+#[derive(Serialize, ToSchema)]
+pub struct MeResponse {
+    pub wallet_address: String,
+}
+
+#[utoipa::path(post, path = "/api/v1/auth/verify", request_body = VerifyRequest, responses((status = 200, body = VerifyResponse), (status = 400, body = crate::error::ErrorResponse, description = "Invalid verification request"), (status = 401, body = crate::error::ErrorResponse, description = "Nonce or signature is invalid")))]
 pub async fn post_verify(
     State(state): State<AppState>,
     AppJson(req): AppJson<VerifyRequest>,
 ) -> Result<Json<VerifyResponse>, AppError> {
-    let row: Option<(String,)> =
+    let row: Option<(OffsetDateTime,)> =
         sqlx::query_as("SELECT expires_at FROM auth_nonces WHERE nonce = ? AND wallet_address = ?")
             .bind(&req.message)
             .bind(&req.wallet_address)
@@ -120,7 +95,7 @@ pub async fn post_verify(
             "unknown or already-consumed nonce",
         )
     })?;
-    if expires_at.as_str() < format_unix_secs(now_unix()).as_str() {
+    if expires_at <= OffsetDateTime::now_utc() {
         return Err(AppError::new(StatusCode::UNAUTHORIZED, "nonce expired"));
     }
 
@@ -175,11 +150,11 @@ pub async fn post_verify(
     .map_err(|e| db_error("create or confirm account", e))?;
 
     let token = random_token_hex(32);
-    let session_expires_at = format_unix_secs(now_unix() + SESSION_TTL_SECS);
+    let session_expires_at = OffsetDateTime::now_utc() + Duration::seconds(SESSION_TTL_SECS);
     sqlx::query("INSERT INTO sessions (token, wallet_address, expires_at) VALUES (?, ?, ?)")
         .bind(&token)
         .bind(&req.wallet_address)
-        .bind(&session_expires_at)
+        .bind(session_expires_at)
         .execute(&state.db)
         .await
         .map_err(|e| db_error("create session", e))?;
@@ -215,7 +190,7 @@ impl FromRequestParts<AppState> for AuthUser {
 
         let token = header.strip_prefix("Bearer ").ok_or_else(unauthorized)?;
 
-        let row: Option<(String, String)> =
+        let row: Option<(String, OffsetDateTime)> =
             sqlx::query_as("SELECT wallet_address, expires_at FROM sessions WHERE token = ?")
                 .bind(token)
                 .fetch_optional(&state.db)
@@ -223,7 +198,7 @@ impl FromRequestParts<AppState> for AuthUser {
                 .map_err(|e| db_error("look up session", e))?;
 
         let (wallet_address, expires_at) = row.ok_or_else(unauthorized)?;
-        if expires_at.as_str() < format_unix_secs(now_unix()).as_str() {
+        if expires_at <= OffsetDateTime::now_utc() {
             return Err(AppError::new(StatusCode::UNAUTHORIZED, "session expired"));
         }
 
@@ -231,8 +206,11 @@ impl FromRequestParts<AppState> for AuthUser {
     }
 }
 
-pub async fn get_me(auth: AuthUser) -> Json<serde_json::Value> {
-    Json(serde_json::json!({ "wallet_address": auth.0 }))
+#[utoipa::path(get, path = "/api/v1/auth/me", security(("bearerAuth" = [])), responses((status = 200, body = MeResponse, description = "Authenticated wallet")))]
+pub async fn get_me(auth: AuthUser) -> Json<MeResponse> {
+    Json(MeResponse {
+        wallet_address: auth.0,
+    })
 }
 
 /// Deletes every expired nonce/session row as of now. Returns
@@ -242,14 +220,14 @@ pub async fn get_me(auth: AuthUser) -> Json<serde_json::Value> {
 /// instead of only being observable through log lines or side effects on
 /// a live timer.
 pub async fn sweep_expired(db: &sqlx::SqlitePool) -> Result<(u64, u64), sqlx::Error> {
-    let now = format_unix_secs(now_unix());
+    let now = OffsetDateTime::now_utc();
 
-    let nonces = sqlx::query("DELETE FROM auth_nonces WHERE expires_at < ?")
-        .bind(&now)
+    let nonces = sqlx::query("DELETE FROM auth_nonces WHERE julianday(expires_at) < julianday(?)")
+        .bind(now)
         .execute(db)
         .await?;
-    let sessions = sqlx::query("DELETE FROM sessions WHERE expires_at < ?")
-        .bind(&now)
+    let sessions = sqlx::query("DELETE FROM sessions WHERE julianday(expires_at) < julianday(?)")
+        .bind(now)
         .execute(db)
         .await?;
 
@@ -295,14 +273,14 @@ mod tests {
     async fn sweep_expired_removes_only_expired_rows() {
         let (db, db_path) = test_db().await;
 
-        let past = format_unix_secs(now_unix() - 3600);
-        let future = format_unix_secs(now_unix() + 3600);
+        let past = OffsetDateTime::now_utc() - Duration::hours(1);
+        let future = OffsetDateTime::now_utc() + Duration::hours(1);
 
         sqlx::query(
             "INSERT INTO auth_nonces (nonce, wallet_address, expires_at) VALUES (?, 'GTEST', ?)",
         )
         .bind("expired-nonce")
-        .bind(&past)
+        .bind(past)
         .execute(&db)
         .await
         .unwrap();
@@ -310,7 +288,7 @@ mod tests {
             "INSERT INTO auth_nonces (nonce, wallet_address, expires_at) VALUES (?, 'GTEST', ?)",
         )
         .bind("live-nonce")
-        .bind(&future)
+        .bind(future)
         .execute(&db)
         .await
         .unwrap();
@@ -323,7 +301,7 @@ mod tests {
             "INSERT INTO sessions (token, wallet_address, expires_at) VALUES (?, 'GTEST', ?)",
         )
         .bind("expired-session")
-        .bind(&past)
+        .bind(past)
         .execute(&db)
         .await
         .unwrap();
@@ -331,7 +309,7 @@ mod tests {
             "INSERT INTO sessions (token, wallet_address, expires_at) VALUES (?, 'GTEST', ?)",
         )
         .bind("live-session")
-        .bind(&future)
+        .bind(future)
         .execute(&db)
         .await
         .unwrap();
@@ -359,9 +337,9 @@ mod tests {
     async fn sweep_expired_is_a_no_op_when_nothing_has_expired() {
         let (db, db_path) = test_db().await;
 
-        let future = format_unix_secs(now_unix() + 3600);
+        let future = OffsetDateTime::now_utc() + Duration::hours(1);
         sqlx::query("INSERT INTO auth_nonces (nonce, wallet_address, expires_at) VALUES ('live', 'GTEST', ?)")
-            .bind(&future)
+            .bind(future)
             .execute(&db)
             .await
             .unwrap();
@@ -390,9 +368,9 @@ mod tests {
             .execute(&state.db)
             .await
             .unwrap();
-        let past = format_unix_secs(now_unix() - 3600);
+        let past = OffsetDateTime::now_utc() - Duration::hours(1);
         sqlx::query("INSERT INTO sessions (token, wallet_address, expires_at) VALUES ('tok123', 'GTEST', ?)")
-            .bind(&past)
+            .bind(past)
             .execute(&state.db)
             .await
             .unwrap();
@@ -423,12 +401,12 @@ mod tests {
         let state = crate::AppState::new(db);
 
         let message = "Sign in to Zenith\nNonce: deadbeef";
-        let past = format_unix_secs(now_unix() - 3600);
+        let past = OffsetDateTime::now_utc() - Duration::hours(1);
         sqlx::query(
             "INSERT INTO auth_nonces (nonce, wallet_address, expires_at) VALUES (?, 'GTEST', ?)",
         )
         .bind(message)
-        .bind(&past)
+        .bind(past)
         .execute(&state.db)
         .await
         .unwrap();

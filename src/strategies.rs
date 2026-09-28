@@ -3,6 +3,8 @@ use axum::http::StatusCode;
 use axum::response::Json;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use time::OffsetDateTime;
+use utoipa::ToSchema;
 
 use crate::auth::AuthUser;
 use crate::error::{db_error, AppError, AppJson};
@@ -12,7 +14,7 @@ use crate::positions::{
 };
 use crate::AppState;
 
-#[derive(Deserialize)]
+#[derive(Deserialize, ToSchema)]
 pub struct ExecuteStrategyRequest {
     pub legs: Vec<OpenPositionRequest>,
 }
@@ -21,6 +23,7 @@ pub struct ExecuteStrategyRequest {
 /// condor, ...) as one atomic transaction under a shared strategy_id —
 /// either all legs open or none do, so a mid-strategy insufficient-funds
 /// rejection can't leave a naked partial position behind.
+#[utoipa::path(post, path = "/api/v1/strategies/execute", request_body = ExecuteStrategyRequest, security(("bearerAuth" = [])), responses((status = 200, body = [Position]), (status = 400, body = crate::error::ErrorResponse, description = "A strategy must contain at least two legs"), (status = 401, body = crate::error::ErrorResponse, description = "Unauthorized"), (status = 422, body = crate::error::ErrorResponse, description = "Insufficient buying power")))]
 pub async fn execute_strategy(
     State(state): State<AppState>,
     AuthUser(wallet_address): AuthUser,
@@ -69,7 +72,7 @@ fn leg_unrealized_pnl(state: &AppState, p: &Position) -> f64 {
     }
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, ToSchema)]
 pub struct StrategySummary {
     pub strategy_id: String,
     /// The underlying shared by every leg opened via execute_strategy. A
@@ -79,7 +82,8 @@ pub struct StrategySummary {
     pub leg_count: usize,
     pub open_leg_count: usize,
     pub status: String, // "open" if any leg is still open, else "closed"
-    pub opened_at: String,
+    #[serde(with = "time::serde::rfc3339")]
+    pub opened_at: OffsetDateTime,
     pub realized_pnl: f64,
     pub unrealized_pnl: f64,
 }
@@ -96,8 +100,8 @@ fn summarize(state: &AppState, strategy_id: String, legs: &[Position]) -> Strate
     // one the strategy was originally opened with.
     let opened_at = legs
         .first()
-        .map(|p| p.opened_at.clone())
-        .unwrap_or_default();
+        .map(|p| p.opened_at)
+        .unwrap_or(time::OffsetDateTime::UNIX_EPOCH);
 
     StrategySummary {
         strategy_id,
@@ -119,6 +123,7 @@ fn summarize(state: &AppState, strategy_id: String, legs: &[Position]) -> Strate
 /// across all of its legs. Plain single-leg positions (strategy_id NULL)
 /// aren't strategies and don't show up here — see /api/v1/positions for
 /// those.
+#[utoipa::path(get, path = "/api/v1/strategies", security(("bearerAuth" = [])), responses((status = 200, body = [StrategySummary]), (status = 401, body = crate::error::ErrorResponse, description = "Unauthorized")))]
 pub async fn list_strategies(
     State(state): State<AppState>,
     AuthUser(wallet_address): AuthUser,
@@ -155,7 +160,7 @@ pub async fn list_strategies(
     Ok(Json(summaries))
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, ToSchema)]
 pub struct StrategyDetail {
     pub strategy_id: String,
     pub status: String,
@@ -189,6 +194,7 @@ async fn load_strategy_legs(
     Ok(legs)
 }
 
+#[utoipa::path(get, path = "/api/v1/strategies/{id}", params(("id" = String, Path, description = "Strategy identifier")), security(("bearerAuth" = [])), responses((status = 200, body = StrategyDetail), (status = 401, body = crate::error::ErrorResponse, description = "Unauthorized"), (status = 404, body = crate::error::ErrorResponse, description = "Strategy not found")))]
 pub async fn get_strategy(
     State(state): State<AppState>,
     AuthUser(wallet_address): AuthUser,
@@ -211,6 +217,7 @@ pub async fn get_strategy(
 /// execute_strategy's all-or-nothing open. Legs already closed or rolled
 /// are left as-is; a roll's replacement leg (same strategy_id) still gets
 /// closed normally.
+#[utoipa::path(post, path = "/api/v1/strategies/{id}/close", params(("id" = String, Path, description = "Strategy identifier")), security(("bearerAuth" = [])), responses((status = 200, body = [Position]), (status = 401, body = crate::error::ErrorResponse, description = "Unauthorized"), (status = 404, body = crate::error::ErrorResponse, description = "No open strategy legs")))]
 pub async fn close_strategy(
     State(state): State<AppState>,
     AuthUser(wallet_address): AuthUser,

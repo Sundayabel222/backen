@@ -11,6 +11,8 @@ use std::{f64::consts::PI, sync::Arc};
 use tower_http::cors::{Any, CorsLayer};
 use tower_http::request_id::{PropagateRequestIdLayer, SetRequestIdLayer};
 use tower_http::trace::TraceLayer;
+use utoipa::{IntoParams, OpenApi, ToSchema};
+use utoipa_swagger_ui::SwaggerUi;
 
 pub mod alerts;
 pub mod auth;
@@ -19,6 +21,7 @@ pub mod db;
 pub mod error;
 pub mod history;
 pub mod models;
+pub mod openapi;
 pub mod payoff;
 pub mod positions;
 pub mod prices;
@@ -82,7 +85,7 @@ pub struct BSInputs {
     pub is_call: bool,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, ToSchema)]
 pub struct BSResult {
     pub premium: f64,
     pub delta: f64,
@@ -266,7 +269,7 @@ impl AppState {
 
 // ─── Request / Response Types ─────────────────────────────────────────────────
 
-#[derive(Deserialize)]
+#[derive(Deserialize, ToSchema, IntoParams)]
 pub struct PriceQuery {
     pub underlying: String,
     pub strike: f64,
@@ -274,7 +277,7 @@ pub struct PriceQuery {
     pub option_type: String, // "call" | "put"
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, ToSchema, IntoParams)]
 pub struct IvQuery {
     pub underlying: String,
     pub strike: f64,
@@ -283,12 +286,12 @@ pub struct IvQuery {
     pub market_price: f64,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, ToSchema)]
 pub struct IvResult {
     pub implied_vol: f64,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, ToSchema)]
 pub struct OptionChainEntry {
     pub strike: f64,
     pub expiry_days: f64,
@@ -298,13 +301,13 @@ pub struct OptionChainEntry {
     pub is_itm_put: bool,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, ToSchema, IntoParams)]
 pub struct ChainQuery {
     pub underlying: String,
     pub expiry_days: f64,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, ToSchema)]
 pub struct ExpiryCalendar {
     pub underlying: String,
     pub spot: f64,
@@ -312,17 +315,37 @@ pub struct ExpiryCalendar {
     pub expiries: Vec<ExpiryInfo>,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, ToSchema)]
 pub struct ExpiryInfo {
     pub days_to_expiry: u32,
     pub label: String,
     pub timestamp: u64,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, ToSchema)]
 pub struct SpotResponse {
     pub prices: std::collections::HashMap<String, f64>,
     pub vols: std::collections::HashMap<String, f64>,
+}
+
+#[derive(Serialize, ToSchema)]
+pub struct HealthResponse {
+    pub status: String,
+    pub service: String,
+    pub version: String,
+    pub network: String,
+    pub database: String,
+}
+
+#[derive(Serialize, ToSchema)]
+pub struct ProtocolStatsResponse {
+    pub total_series: u32,
+    pub active_series: u32,
+    pub total_premium_volume: f64,
+    pub open_interest: f64,
+    pub unique_traders: u32,
+    pub markets: Vec<String>,
+    pub network: String,
 }
 
 // ─── Route Handlers ───────────────────────────────────────────────────────────
@@ -331,7 +354,10 @@ pub struct SpotResponse {
 /// orchestrator should see this fail (and stop routing traffic here) if
 /// the pool is exhausted or the file's gone missing, not just get a
 /// hollow "ok" that only proves the HTTP server itself is up.
-async fn health(State(state): State<AppState>) -> Result<Json<serde_json::Value>, error::AppError> {
+#[utoipa::path(get, path = "/health", responses((status = 200, body = HealthResponse, description = "Database-backed service health")))]
+pub(crate) async fn health(
+    State(state): State<AppState>,
+) -> Result<Json<HealthResponse>, error::AppError> {
     sqlx::query("SELECT 1")
         .execute(&state.db)
         .await
@@ -340,22 +366,24 @@ async fn health(State(state): State<AppState>) -> Result<Json<serde_json::Value>
             error::AppError::new(StatusCode::SERVICE_UNAVAILABLE, "database unavailable")
         })?;
 
-    Ok(Json(serde_json::json!({
-        "status": "ok",
-        "service": "zenith-backend",
-        "version": "0.1.0",
-        "network": "stellar-testnet",
-        "database": "ok"
-    })))
+    Ok(Json(HealthResponse {
+        status: "ok".to_string(),
+        service: "zenith-backend".to_string(),
+        version: "0.1.0".to_string(),
+        network: "stellar-testnet".to_string(),
+        database: "ok".to_string(),
+    }))
 }
 
-async fn get_spot(State(state): State<AppState>) -> Json<SpotResponse> {
+#[utoipa::path(get, path = "/api/v1/spot", responses((status = 200, body = SpotResponse)))]
+pub(crate) async fn get_spot(State(state): State<AppState>) -> Json<SpotResponse> {
     let prices = state.spot_prices.lock().unwrap().clone();
     let vols = state.vol_surface.lock().unwrap().clone();
     Json(SpotResponse { prices, vols })
 }
 
-async fn price_option(
+#[utoipa::path(get, path = "/api/v1/price", params(PriceQuery), responses((status = 200, body = BSResult), (status = 404, description = "Unknown underlying")))]
+pub(crate) async fn price_option(
     State(state): State<AppState>,
     AppQuery(q): AppQuery<PriceQuery>,
 ) -> Result<Json<BSResult>, StatusCode> {
@@ -380,7 +408,8 @@ async fn price_option(
     Ok(Json(result))
 }
 
-async fn get_chain(
+#[utoipa::path(get, path = "/api/v1/chain", params(ChainQuery), responses((status = 200, body = [OptionChainEntry]), (status = 404, description = "Unknown underlying")))]
+pub(crate) async fn get_chain(
     State(state): State<AppState>,
     AppQuery(q): AppQuery<ChainQuery>,
 ) -> Result<Json<Vec<OptionChainEntry>>, StatusCode> {
@@ -439,7 +468,8 @@ async fn get_chain(
     Ok(Json(chain))
 }
 
-async fn get_implied_vol(
+#[utoipa::path(get, path = "/api/v1/iv", params(IvQuery), responses((status = 200, body = IvResult), (status = 404, description = "Unknown underlying"), (status = 422, description = "Market price is below intrinsic value")))]
+pub(crate) async fn get_implied_vol(
     State(state): State<AppState>,
     AppQuery(q): AppQuery<IvQuery>,
 ) -> Result<Json<IvResult>, StatusCode> {
@@ -455,7 +485,8 @@ async fn get_implied_vol(
     Ok(Json(IvResult { implied_vol: iv }))
 }
 
-async fn get_expiry_calendar(
+#[utoipa::path(get, path = "/api/v1/expiries/{underlying}", params(("underlying" = String, Path, description = "Underlying symbol")), responses((status = 200, body = ExpiryCalendar), (status = 404, description = "Unknown underlying")))]
+pub(crate) async fn get_expiry_calendar(
     State(state): State<AppState>,
     Path(underlying): Path<String>,
 ) -> Result<Json<ExpiryCalendar>, StatusCode> {
@@ -487,17 +518,20 @@ async fn get_expiry_calendar(
     }))
 }
 
-async fn get_protocol_stats(State(state): State<AppState>) -> Json<serde_json::Value> {
+#[utoipa::path(get, path = "/api/v1/stats", responses((status = 200, body = ProtocolStatsResponse, description = "Mock protocol statistics")))]
+pub(crate) async fn get_protocol_stats(
+    State(state): State<AppState>,
+) -> Json<ProtocolStatsResponse> {
     let prices = state.spot_prices.lock().unwrap();
-    Json(serde_json::json!({
-        "total_series": 28,
-        "active_series": 16,
-        "total_premium_volume": 284_700.0,
-        "open_interest": 1_420_000.0,
-        "unique_traders": 312,
-        "markets": prices.keys().collect::<Vec<_>>(),
-        "network": "stellar-testnet"
-    }))
+    Json(ProtocolStatsResponse {
+        total_series: 28,
+        active_series: 16,
+        total_premium_volume: 284_700.0,
+        open_interest: 1_420_000.0,
+        unique_traders: 312,
+        markets: prices.keys().cloned().collect(),
+        network: "stellar-testnet".to_string(),
+    })
 }
 
 // ─── App wiring ───────────────────────────────────────────────────────────────
@@ -645,6 +679,7 @@ pub fn build_router(state: AppState) -> Router {
         .route("/api/v1/strategies/:id", get(strategies::get_strategy))
         .route("/api/v1/ws/spot", get(prices::ws_spot))
         .route("/api/v1/portfolio/payoff", post(payoff::post_payoff))
+        .merge(SwaggerUi::new("/docs").url("/api/v1/openapi.json", openapi::ApiDoc::openapi()))
         .route(
             "/api/v1/portfolio/greeks",
             get(positions::get_portfolio_greeks),
