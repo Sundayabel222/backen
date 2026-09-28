@@ -1,6 +1,7 @@
 use axum::extract::State;
 use axum::response::Json;
 use serde::{Deserialize, Serialize};
+use utoipa::{IntoParams, ToSchema};
 
 use crate::auth::AuthUser;
 use crate::error::{db_error, AppError, AppQuery};
@@ -8,13 +9,13 @@ use crate::models::Position;
 use crate::positions::{DEFAULT_LIST_LIMIT, MAX_LIST_LIMIT};
 use crate::AppState;
 
-#[derive(Deserialize)]
+#[derive(Deserialize, ToSchema, IntoParams)]
 pub struct HistoryQuery {
     pub limit: Option<i64>,
     pub offset: Option<i64>,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, ToSchema)]
 pub struct HistoryStats {
     pub trade_count: i64,
     pub win_count: i64,
@@ -22,7 +23,7 @@ pub struct HistoryStats {
     pub total_realized_pnl: f64,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, ToSchema)]
 pub struct HistoryResponse {
     pub trades: Vec<Position>,
     pub stats: HistoryStats,
@@ -41,6 +42,7 @@ pub struct HistoryResponse {
 /// limit/offset — pagination only applies to which rows `trades` returns,
 /// since a win/loss/pnl summary that changed depending on which page you
 /// requested would be actively misleading.
+#[utoipa::path(get, path = "/api/v1/history", params(HistoryQuery), security(("bearerAuth" = [])), responses((status = 200, body = HistoryResponse), (status = 401, body = crate::error::ErrorResponse, description = "Unauthorized")))]
 pub async fn get_history(
     State(state): State<AppState>,
     AuthUser(wallet_address): AuthUser,

@@ -3,6 +3,7 @@ use axum::http::{HeaderMap, HeaderValue, StatusCode};
 use axum::response::Json;
 use serde::{Deserialize, Serialize};
 use sqlx::{Sqlite, Transaction};
+use utoipa::{IntoParams, ToSchema};
 
 use crate::auth::AuthUser;
 use crate::collateral::collateral_required;
@@ -10,6 +11,7 @@ use crate::error::{db_error, AppError, AppJson, AppQuery};
 use crate::models::{Account, Position};
 use crate::{black_scholes, smile_vol, AppState, BSInputs, BSResult};
 
+#[utoipa::path(get, path = "/api/v1/account", security(("bearerAuth" = [])), responses((status = 200, body = Account), (status = 401, body = crate::error::ErrorResponse, description = "Unauthorized")))]
 pub async fn get_account(
     State(state): State<AppState>,
     AuthUser(wallet_address): AuthUser,
@@ -36,7 +38,7 @@ pub async fn get_account(
 pub const DEFAULT_LIST_LIMIT: i64 = 50;
 pub const MAX_LIST_LIMIT: i64 = 200;
 
-#[derive(Deserialize)]
+#[derive(Deserialize, ToSchema, IntoParams)]
 pub struct ListPositionsQuery {
     /// "open" | "closed" | "rolled" — omit to return every status.
     pub status: Option<String>,
@@ -54,6 +56,7 @@ pub struct ListPositionsQuery {
 /// headers instead, the same pattern GitHub's API uses for exactly this
 /// reason: it lets pagination metadata arrive without breaking existing
 /// callers that expect the body to just be the list.
+#[utoipa::path(get, path = "/api/v1/positions", params(ListPositionsQuery), security(("bearerAuth" = [])), responses((status = 200, body = [Position]), (status = 401, body = crate::error::ErrorResponse, description = "Unauthorized")))]
 pub async fn list_positions(
     State(state): State<AppState>,
     AuthUser(wallet_address): AuthUser,
@@ -112,7 +115,7 @@ pub async fn list_positions(
     Ok((headers, Json(positions)))
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, ToSchema)]
 pub struct OpenPositionRequest {
     pub underlying: String,
     pub strike: f64,
@@ -249,6 +252,7 @@ pub(crate) async fn open_position_in_tx(
     Ok(position)
 }
 
+#[utoipa::path(post, path = "/api/v1/positions/open", request_body = OpenPositionRequest, security(("bearerAuth" = [])), responses((status = 200, body = Position), (status = 400, body = crate::error::ErrorResponse, description = "Invalid position"), (status = 401, body = crate::error::ErrorResponse, description = "Unauthorized"), (status = 422, body = crate::error::ErrorResponse, description = "Insufficient buying power")))]
 pub async fn open_position(
     State(state): State<AppState>,
     AuthUser(wallet_address): AuthUser,
@@ -355,12 +359,13 @@ pub(crate) async fn close_position_in_tx(
     sqlx::query(
         "UPDATE positions
             SET status = 'closed', close_premium = ?, close_spot = ?, realized_pnl = ?,
-                closed_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+                closed_at = ?
          WHERE id = ?",
     )
     .bind(close_premium)
     .bind(spot)
     .bind(realized_pnl)
+    .bind(crate::models::now_utc_millis())
     .bind(position_id)
     .execute(&mut **tx)
     .await
@@ -375,6 +380,7 @@ pub(crate) async fn close_position_in_tx(
     Ok(closed)
 }
 
+#[utoipa::path(post, path = "/api/v1/positions/{id}/close", params(("id" = String, Path, description = "Position identifier")), security(("bearerAuth" = [])), responses((status = 200, body = Position), (status = 401, body = crate::error::ErrorResponse, description = "Unauthorized"), (status = 404, body = crate::error::ErrorResponse, description = "Position not found")))]
 pub async fn close_position(
     State(state): State<AppState>,
     AuthUser(wallet_address): AuthUser,
@@ -392,13 +398,13 @@ pub async fn close_position(
     Ok(Json(closed))
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, ToSchema)]
 pub struct RollPositionRequest {
     pub new_strike: f64,
     pub new_expiry_days: f64,
 }
 
-#[derive(serde::Serialize)]
+#[derive(serde::Serialize, ToSchema)]
 pub struct RollResult {
     pub closed: Position,
     pub opened: Position,
@@ -407,6 +413,7 @@ pub struct RollResult {
 /// Closes the given position and immediately opens its replacement (same
 /// underlying/option_type/position_type/contracts, new strike and expiry)
 /// as one atomic transaction — either both happen or neither does.
+#[utoipa::path(post, path = "/api/v1/positions/{id}/roll", params(("id" = String, Path, description = "Position identifier")), request_body = RollPositionRequest, security(("bearerAuth" = [])), responses((status = 200, body = RollResult), (status = 400, body = crate::error::ErrorResponse, description = "Invalid replacement position"), (status = 401, body = crate::error::ErrorResponse, description = "Unauthorized"), (status = 404, body = crate::error::ErrorResponse, description = "Position not found")))]
 pub async fn roll_position(
     State(state): State<AppState>,
     AuthUser(wallet_address): AuthUser,
@@ -455,7 +462,7 @@ pub async fn roll_position(
     Ok(Json(RollResult { closed, opened }))
 }
 
-#[derive(Serialize, Default)]
+#[derive(Serialize, Default, ToSchema)]
 pub struct AggregateGreeks {
     pub delta: f64,
     pub gamma: f64,
@@ -492,6 +499,7 @@ pub(crate) fn current_bs_result(state: &AppState, p: &Position) -> Option<BSResu
 
 /// Sums each open position's current Greeks, flipping sign for short
 /// positions — ported from the frontend's aggregateGreeks().
+#[utoipa::path(get, path = "/api/v1/portfolio/greeks", security(("bearerAuth" = [])), responses((status = 200, body = AggregateGreeks), (status = 401, body = crate::error::ErrorResponse, description = "Unauthorized")))]
 pub async fn get_portfolio_greeks(
     State(state): State<AppState>,
     AuthUser(wallet_address): AuthUser,

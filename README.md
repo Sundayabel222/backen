@@ -23,7 +23,7 @@ cargo run
 ```
 
 ```bash
-cargo test              # 11 unit tests + 29 integration tests
+cargo test              # unit and integration test suite
 cargo clippy --all-targets -- -D warnings
 cargo fmt --check
 ```
@@ -31,6 +31,33 @@ cargo fmt --check
 No external services required — sqlx creates and migrates the SQLite
 file on first run, and every integration test spins up its own
 throwaway temp-file database.
+
+The OpenAPI 3.1 document is served at
+`/api/v1/openapi.json` and the interactive Swagger UI at `/docs`.
+After changing API routes or request/response types, regenerate the
+committed specification with `cargo run --bin generate-openapi`; CI
+checks that `openapi.json` matches the current annotations.
+All timestamps in model responses are typed `OffsetDateTime` values
+serialized as strict RFC 3339 strings in UTC; SQLite stores the same
+timestamps normalized to millisecond-precision UTC strings.
+
+### Database administration
+
+`zenith-admin` provides deterministic fixture data and anonymized
+snapshots:
+
+```bash
+cargo run --bin zenith-admin -- fixtures generate --wallets 25 --days 90 --seed 42
+cargo run --bin zenith-admin -- fixtures generate --wallets 25 --days 90 --seed 42 --database-url sqlite://demo.db
+cargo run --bin zenith-admin -- snapshot anonymize --from sqlite://production.db --to sqlite://shareable.db
+```
+
+Fixture generation refuses non-empty account/trading tables, uses the
+real strategy, position, roll, close, alert, and price-tick code paths,
+and replaces runtime-generated identifiers/timestamps with seeded,
+repeatable values. An anonymized snapshot is made with SQLite `VACUUM
+INTO`, removes auth sessions and nonces, and pseudonymizes every wallet
+reference while keeping foreign keys consistent.
 
 ## Endpoints
 

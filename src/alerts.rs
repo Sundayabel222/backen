@@ -2,12 +2,14 @@ use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use axum::response::Json;
 use serde::Deserialize;
+use utoipa::ToSchema;
 
 use crate::auth::AuthUser;
 use crate::error::{db_error, AppError, AppJson};
 use crate::models::Alert;
 use crate::AppState;
 
+#[utoipa::path(get, path = "/api/v1/alerts", security(("bearerAuth" = [])), responses((status = 200, body = [Alert]), (status = 401, body = crate::error::ErrorResponse, description = "Unauthorized")))]
 pub async fn get_alerts(
     State(state): State<AppState>,
     AuthUser(wallet_address): AuthUser,
@@ -22,13 +24,14 @@ pub async fn get_alerts(
     Ok(Json(alerts))
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, ToSchema)]
 pub struct CreateAlertRequest {
     pub underlying: String,
     pub condition: String, // "above" | "below"
     pub target_price: f64,
 }
 
+#[utoipa::path(post, path = "/api/v1/alerts", request_body = CreateAlertRequest, security(("bearerAuth" = [])), responses((status = 200, body = Alert), (status = 400, body = crate::error::ErrorResponse, description = "Invalid alert"), (status = 401, body = crate::error::ErrorResponse, description = "Unauthorized"), (status = 404, body = crate::error::ErrorResponse, description = "Unknown underlying")))]
 pub async fn create_alert(
     State(state): State<AppState>,
     AuthUser(wallet_address): AuthUser,
@@ -81,6 +84,7 @@ pub async fn create_alert(
     Ok(Json(alert))
 }
 
+#[utoipa::path(delete, path = "/api/v1/alerts/{id}", params(("id" = String, Path, description = "Alert identifier")), security(("bearerAuth" = [])), responses((status = 204, description = "Alert deleted"), (status = 401, body = crate::error::ErrorResponse, description = "Unauthorized"), (status = 404, body = crate::error::ErrorResponse, description = "Alert not found")))]
 pub async fn delete_alert(
     State(state): State<AppState>,
     AuthUser(wallet_address): AuthUser,
@@ -114,11 +118,12 @@ pub async fn check_once(state: &AppState) -> u64 {
     for (underlying, spot) in prices {
         let result = sqlx::query(
             "UPDATE alerts
-                SET triggered = 1, triggered_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+                SET triggered = 1, triggered_at = ?
              WHERE underlying = ? AND triggered = 0
                AND ((condition = 'above' AND target_price <= ?)
                  OR (condition = 'below' AND target_price >= ?))",
         )
+        .bind(crate::models::now_utc_millis())
         .bind(&underlying)
         .bind(spot)
         .bind(spot)
